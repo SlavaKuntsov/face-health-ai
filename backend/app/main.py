@@ -188,24 +188,45 @@ def load_detectors():
         raise RuntimeError("Failed to load Haar cascade for eye detection")
     app.state.eye_detector = eye_detector
 
-    # DNN (SSD ResNet10 Caffe) — опционально
     MODELS_DIR = Path(__file__).resolve().parent / "models"
+
+    # DNN (SSD ResNet10 Caffe) — опционально (не прерываем загрузку при отсутствии)
     proto = MODELS_DIR / "deploy.prototxt"
     weights = MODELS_DIR / "res10_300x300_ssd_iter_140000.caffemodel"
-
+    app.state.dnn = None
     logger.info(f"DNN paths: proto={proto.exists()}, weights={weights.exists()}")
-    if not proto.exists() or not weights.exists():
-        app.state.dnn = None
-        logger.warning("DNN face model missing; only Haar will be used")
-        return
+    if proto.exists() and weights.exists():
+        try:
+            net = cv2.dnn.readNetFromCaffe(str(proto), str(weights))
+            app.state.dnn = net
+            logger.info("DNN face detector loaded")
+        except Exception as e:
+            logger.exception(f"Failed to load DNN model: {e}")
 
+    # YuNet (ONNX) — основной
+    yn_path = MODELS_DIR / "face_detection_yunet_2023mar.onnx"
+    app.state.yunet = None
     try:
-        net = cv2.dnn.readNetFromCaffe(str(proto), str(weights))
-        app.state.dnn = net
-        logger.info("DNN face detector loaded")
+        if yn_path.exists():
+            # API бывает двух форм: FaceDetectorYN_create или FaceDetectorYN.create
+            if hasattr(cv2, "FaceDetectorYN_create"):
+                yn = cv2.FaceDetectorYN_create(
+                    str(yn_path), "", (320, 320), 0.6, 0.3, 500
+                )
+            elif hasattr(cv2, "FaceDetectorYN") and hasattr(cv2.FaceDetectorYN, "create"):
+                yn = cv2.FaceDetectorYN.create(
+                    str(yn_path), "", (320, 320), 0.6, 0.3, 500
+                )
+            else:
+                yn = None
+            app.state.yunet = yn
+            logger.info("YuNet loaded" if yn is not None else "YuNet API not available in this OpenCV build")
+        else:
+            logger.warning("YuNet model not found; detector will fallback to DNN/Haar")
     except Exception as e:
-        logger.exception(f"Failed to load DNN model: {e}")
-        app.state.dnn = None
+        logger.exception(f"YuNet init failed: {e}")
+        app.state.yunet = None
+
 
 # ---------- детекторы ----------
 
@@ -255,6 +276,35 @@ def detect_faces_haar(gray_proc: np.ndarray) -> List[Dict[str, Any]]:
         flags=cv2.CASCADE_SCALE_IMAGE
     )
     return [{"x": int(x), "y": int(y), "width": int(w), "height": int(h)} for (x, y, w, h) in faces]
+
+
+def detect_faces_yunet(frame_bgr: np.ndarray, conf_thresh: float = 0.6) -> List[Dict[str, Any]]:
+    yn = getattr(app.state, "yunet", None)
+    if yn is None:
+        return []
+    h, w = frame_bgr.shape[:2]
+    # Важно: перед каждым вызовом обновлять входной размер
+    try:
+        if hasattr(yn, "setInputSize"):
+            yn.setInputSize((w, h))
+        retval, faces = yn.detect(frame_bgr)
+    except Exception as e:
+        logger.exception(f"YuNet detect failed: {e}")
+        return []
+
+    if faces is None or len(faces) == 0:
+        return []
+
+    out = []
+    # Формат: [x, y, w, h, 5*landmarks..., score] (N x 15)
+    for r in faces:
+        x, y, ww, hh = int(r[0]), int(r[1]), int(r[2]), int(r[3])
+        score = float(r[-1])
+        if score < conf_thresh or ww <= 0 or hh <= 0:
+            continue
+        out.append({"x": x, "y": y, "width": ww, "height": hh, "confidence": score})
+    return out
+
 
 # ---------- per-face оценка ----------
 
@@ -398,18 +448,37 @@ async def analyze_face(image: UploadFile = File(...)):
     H, W = frame.shape[:2]
     proc, scale = resize_keep_ratio(frame, max_width=1024)
 
-    # 1) DNN
-    dnn_results_proc = detect_faces_dnn(proc, conf_thresh=0.7)
-    detector_used = "dnn" if dnn_results_proc else "haar"
-
-    # 2) Фолбэк: Haar на CLAHE
-    if not dnn_results_proc:
-        gray = cv2.cvtColor(proc, cv2.COLOR_BGR2GRAY)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        gray = clahe.apply(gray)
-        results_proc = detect_faces_haar(gray)
+    # 1) YuNet
+    yunet_results_proc = detect_faces_yunet(proc, conf_thresh=0.6)
+    if yunet_results_proc:
+        results_proc = yunet_results_proc
+        detector_used = "yunet"
     else:
-        results_proc = dnn_results_proc
+        # 2) DNN
+        dnn_results_proc = detect_faces_dnn(proc, conf_thresh=0.7)
+        if dnn_results_proc:
+            results_proc = dnn_results_proc
+            detector_used = "dnn"
+        else:
+            # 3) Haar на CLAHE
+            gray = cv2.cvtColor(proc, cv2.COLOR_BGR2GRAY)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            gray = clahe.apply(gray)
+            results_proc = detect_faces_haar(gray)
+            detector_used = "haar"
+
+    # # 1) DNN
+    # dnn_results_proc = detect_faces_dnn(proc, conf_thresh=0.7)
+    # detector_used = "dnn" if dnn_results_proc else "haar"
+
+    # # 2) Фолбэк: Haar на CLAHE
+    # if not dnn_results_proc:
+    #     gray = cv2.cvtColor(proc, cv2.COLOR_BGR2GRAY)
+    #     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    #     gray = clahe.apply(gray)
+    #     results_proc = detect_faces_haar(gray)
+    # else:
+    #     results_proc = dnn_results_proc
 
     # Координаты → исходный размер, пост-фильтр
     faces_raw = map_to_original_scale(results_proc, scale)
