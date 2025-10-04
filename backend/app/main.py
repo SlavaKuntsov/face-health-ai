@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 import cv2
 import numpy as np
 
-app = FastAPI(title="FaceIt Health Prototype")
+app = FastAPI(title="face-health-ai Prototype")
 
 app.add_middleware(
     CORSMiddleware,
