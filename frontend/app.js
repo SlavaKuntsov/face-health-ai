@@ -51,7 +51,6 @@ function App() {
     setIsStreaming(false)
   }
 
-  // Общая функция анализа двоичных данных изображения
   const analyzeBlob = async (blob, baseSnapshotForPreview) => {
     setIsLoading(true)
     setError(null)
@@ -64,28 +63,26 @@ function App() {
       formData.append('image', blob, 'capture.jpg')
 
       const response = await fetch('/api/analyze', { method: 'POST', body: formData })
-
       if (!response.ok) {
         let detail = 'Ошибка анализа'
         try {
           const data = await response.json()
           detail = data.detail || detail
-        } catch (_) { /* ignore */ }
+        } catch (_) {}
         throw new Error(detail)
       }
 
       const data = await response.json()
       setResult(data)
 
-      // Если у нас ещё нет base64 — сделаем (для загруженного файла)
+      // превью для загруженного файла
       let baseSnapshot = baseSnapshotForPreview
       if (!baseSnapshot) {
         baseSnapshot = await blobToDataURL(blob)
         setSnapshot(baseSnapshot)
       }
 
-      // Нанесём рамки
-      await annotateSnapshot(baseSnapshot, data.faces)
+      await annotateSnapshot(baseSnapshot, data.faces || [])
     } catch (err) {
       setError(err.message)
     } finally {
@@ -137,12 +134,10 @@ function App() {
   const captureAndAnalyze = async () => {
     const video = videoRef.current
     const canvas = canvasRef.current
-
     if (!isStreaming || !video || !canvas) {
       setError('Сначала запустите камеру и дождитесь отображения изображения')
       return
     }
-
     const width = video.videoWidth
     const height = video.videoHeight
     if (!width || !height) {
@@ -150,14 +145,12 @@ function App() {
       return
     }
 
-    // Снимок
     canvas.width = width
     canvas.height = height
     const ctx = canvas.getContext('2d')
     ctx.drawImage(video, 0, 0, width, height)
     const baseSnapshot = canvas.toDataURL('image/jpeg')
 
-    // Получим blob и отправим
     const blob = await new Promise((resolve, reject) => {
       canvas.toBlob(b => (b ? resolve(b) : reject(new Error('Не удалось получить изображение камеры'))), 'image/jpeg')
     })
@@ -165,17 +158,19 @@ function App() {
     await analyzeBlob(blob, baseSnapshot)
   }
 
-  // Загрузка пользовательского изображения
-  const onUploadClick = () => {
-    fileInputRef.current?.click()
-  }
-
+  const onUploadClick = () => fileInputRef.current?.click()
   const onFileChange = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
-    await analyzeBlob(file, null) // base64 создадим внутри, чтобы показать превью
-    // очистим input, чтобы повторно выбрать тот же файл можно было
+    await analyzeBlob(file, null)
     e.target.value = ''
+  }
+
+  const badge = (flag) => {
+    const cls = flag === 'high' ? 'badge danger'
+              : flag === 'mild' ? 'badge warn'
+              : 'badge ok'
+    return React.createElement('span', { className: cls }, flag)
   }
 
   return React.createElement(
@@ -185,7 +180,7 @@ function App() {
     React.createElement(
       'p',
       null,
-      'Сделайте снимок с веб-камеры или загрузите файл — система определит количество лиц в кадре.'
+      'Сделайте снимок с веб-камеры или загрузите файл — система определит лица и покажет эвристические индикаторы.'
     ),
 
     React.createElement(
@@ -194,44 +189,18 @@ function App() {
       React.createElement(
         'div',
         { className: 'video-frame' },
-        React.createElement('video', {
-          ref: videoRef,
-          playsInline: true,
-          muted: true,
-          autoPlay: false
-        })
+        React.createElement('video', { ref: videoRef, playsInline: true, muted: true, autoPlay: false })
       ),
       React.createElement(
         'div',
         { className: 'controls' },
-        React.createElement(
-          'button',
-          { type: 'button', onClick: startCamera, disabled: isStreaming },
-          'Запустить камеру'
-        ),
-        React.createElement(
-          'button',
-          { type: 'button', onClick: stopCamera, disabled: !isStreaming },
-          'Остановить'
-        ),
-        React.createElement(
-          'button',
-          { type: 'button', onClick: captureAndAnalyze, disabled: !isStreaming || isLoading },
+        React.createElement('button', { type: 'button', onClick: startCamera, disabled: isStreaming }, 'Запустить камеру'),
+        React.createElement('button', { type: 'button', onClick: stopCamera, disabled: !isStreaming }, 'Остановить'),
+        React.createElement('button', { type: 'button', onClick: captureAndAnalyze, disabled: !isStreaming || isLoading },
           isLoading ? 'Анализ...' : 'Снимок и анализ'
         ),
-        // Новое: кнопка загрузки
-        React.createElement(
-          'button',
-          { type: 'button', onClick: onUploadClick, disabled: isLoading },
-          'Загрузить изображение'
-        ),
-        React.createElement('input', {
-          ref: fileInputRef,
-          type: 'file',
-          accept: 'image/*',
-          style: { display: 'none' },
-          onChange: onFileChange
-        })
+        React.createElement('button', { type: 'button', onClick: onUploadClick, disabled: isLoading }, 'Загрузить изображение'),
+        React.createElement('input', { ref: fileInputRef, type: 'file', accept: 'image/*', style: { display: 'none' }, onChange: onFileChange })
       )
     ),
 
@@ -251,6 +220,47 @@ function App() {
         { className: 'results' },
         React.createElement('h2', null, 'Результаты анализа'),
         React.createElement('p', null, `Количество обнаруженных лиц: ${result.faces_count}`),
+
+        // Качество
+        result.quality && React.createElement(
+          'div',
+          { className: 'quality' },
+          React.createElement('h3', null, 'Качество кадра'),
+          React.createElement('ul', null, [
+            React.createElement('li', { key: 'q1' }, `blur_variance: ${result.quality.blur_variance}`),
+            React.createElement('li', { key: 'q2' }, `brightness_mean: ${result.quality.brightness_mean}`),
+            React.createElement('li', { key: 'q3' }, `face_area_ratio: ${result.quality.face_area_ratio}`),
+            React.createElement('li', { key: 'q4' }, `ok: ${result.quality.ok}`),
+            (result.quality.notes?.length ? React.createElement('li', { key: 'q5' }, `notes: ${result.quality.notes.join(', ')}`) : null)
+          ])
+        ),
+
+        // Индикаторы
+        result.indicators && Object.keys(result.indicators).length > 0 &&
+          React.createElement(
+            'div',
+            { className: 'indicators' },
+            React.createElement('h3', null, 'Индикаторы (эвристики)'),
+            React.createElement('ul', null,
+              Object.entries(result.indicators).map(([k, v]) =>
+                React.createElement('li', { key: k },
+                  `${k}: score=${v.score} `,
+                  badge(v.flag)
+                )
+              )
+            )
+          ),
+
+        // Совет/дисклеймер
+        (result.advice?.length > 0) && React.createElement(
+          'div',
+          { className: 'advice' },
+          React.createElement('h3', null, 'Рекомендации'),
+          React.createElement('ul', null, result.advice.map((a, i) => React.createElement('li', { key: i }, a)))
+        ),
+        result.disclaimer && React.createElement('p', { className: 'disclaimer' }, result.disclaimer),
+
+        // Координаты лиц
         result.faces_count > 0 &&
           React.createElement(
             'details',
