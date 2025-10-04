@@ -14,9 +14,11 @@
    ```bash
    cd backend
    python -m venv .venv
-   source .venv/bin/activate
+   source .venv/bin/activate # mac, linux
+   .\.venv\Scripts\activate.bat # windows(cmd)
    pip install -r requirements.txt
-   uvicorn app.main:app --reload
+   cd ..
+   uvicorn backend.app.main:app --reload
    ```
 
 2. Откройте `http://127.0.0.1:8000` в браузере. Разрешите доступ к камере, нажмите «Запустить камеру», затем «Снимок и анализ». Ответ содержит число найденных лиц и их координаты.
@@ -27,6 +29,7 @@
 backend/
   app/
     main.py        # FastAPI приложение с эндпоинтом /api/analyze
+	models/          # Модели распознания лиц (DNN, YuNet)
   requirements.txt
 frontend/
   app.js           # Минималистичный React-компонент
