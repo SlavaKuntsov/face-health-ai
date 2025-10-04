@@ -1,9 +1,12 @@
+import logging
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import cv2
 import numpy as np
+
+logger = logging.getLogger("uvicorn")
 
 app = FastAPI(title="face-health-ai Prototype")
 
@@ -44,8 +47,13 @@ async def analyze_face(image: UploadFile = File(...)):
     results = []
     for (x, y, w, h) in faces:
         results.append({"x": int(x), "y": int(y), "width": int(w), "height": int(h)})
+        
+    length = len(results)
+        
+    res_obj = {"faces_count": length, "faces": results}
 
-    return {"faces_count": len(results), "faces": results}
+    logger.info(f"faces_count: {length}")
+    return res_obj
 
 
 @app.get("/")
